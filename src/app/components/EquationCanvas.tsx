@@ -15,13 +15,101 @@ interface TextElement {
 }
 type EquationElement = FractionElement | TextElement
 
+type ExpressionState = 'valid' | 'invalid' | 'inter'
+
 export default function EquationCanvas() {
   const [currentInput, setCurrentInput] = useState('')
   const currentInputRef = useRef('')              // <-- mirror
   useEffect(() => { currentInputRef.current = currentInput }, [currentInput])
 
   const [elements, setElements] = useState<EquationElement[]>([])
+  const [validationMessage, setValidationMessage] = useState<string>('')
+  const [expressionState, setExpressionState] = useState<ExpressionState>('valid')
   const canvasRef = useRef<HTMLDivElement>(null)
+
+  // Function to determine what type the last element on canvas is
+  const getLastElementType = (): 'empty' | 'fraction' | 'operation' => {
+    if (elements.length === 0) return 'empty'
+    const lastElement = elements[elements.length - 1]
+    return lastElement.type === 'fraction' ? 'fraction' : 'operation'
+  }
+
+  // Function to evaluate the complete expression state (canvas + current input)
+  const evaluateExpressionState = (input: string): ExpressionState => {
+    const trimmed = input.trim()
+    
+    // Create a hypothetical sequence: canvas elements + potential new input
+    const potentialElements = [...elements]
+    
+    if (trimmed) {
+      const isFraction = /^([a-zA-Z0-9]+)\/([a-zA-Z0-9]+)$/.test(trimmed)
+      const isOperation = /^[\+\-\*\/]$/.test(trimmed)
+      const isFullExpression = /^([a-zA-Z0-9]+)\/([a-zA-Z0-9]+)\s*([\+\-\*\/])\s*([a-zA-Z0-9]+)\/([a-zA-Z0-9]+)$/.test(trimmed)
+      const isOperationFraction = /^([\+\-\*\/])([a-zA-Z0-9]+)\/([a-zA-Z0-9]+)$/.test(trimmed)
+      
+      if (isFullExpression) {
+        // Full expression: always results in valid state (fraction + operation + fraction)
+        return 'valid'
+      } else if (isOperationFraction) {
+        // Operation + fraction: add both to potential elements
+        potentialElements.push({ type: 'text', content: '', id: 'temp' })
+        potentialElements.push({ type: 'fraction', numerator: '', denominator: '', id: 'temp' })
+      } else if (isFraction) {
+        potentialElements.push({ type: 'fraction', numerator: '', denominator: '', id: 'temp' })
+      } else if (isOperation) {
+        potentialElements.push({ type: 'text', content: trimmed, id: 'temp' })
+      }
+    }
+    
+    // Analyze the sequence
+    if (potentialElements.length === 0) {
+      return 'valid' // Empty is valid
+    }
+    
+    // Check for invalid patterns
+    for (let i = 0; i < potentialElements.length - 1; i++) {
+      const current = potentialElements[i]
+      const next = potentialElements[i + 1]
+      
+      // Two fractions in a row = invalid
+      if (current.type === 'fraction' && next.type === 'fraction') {
+        return 'invalid'
+      }
+      
+      // Two operations in a row = invalid
+      if (current.type === 'text' && next.type === 'text') {
+        return 'invalid'
+      }
+    }
+    
+    // Check if expression is complete (valid) or incomplete (inter)
+    const lastElement = potentialElements[potentialElements.length - 1]
+    
+    if (lastElement.type === 'fraction') {
+      // Ends with fraction
+      if (potentialElements.length === 1) {
+        return 'valid' // Single fraction is valid
+      }
+      // Check if previous element is operation
+      const prevElement = potentialElements[potentialElements.length - 2]
+      return prevElement.type === 'text' ? 'valid' : 'invalid'
+    } else {
+      // Ends with operation - this is intermediate (waiting for fraction)
+      return 'inter'
+    }
+  }
+
+  // Function to validate if the current input is legal given the canvas state
+  const isValidInput = (input: string): boolean => {
+    const state = evaluateExpressionState(input)
+    return state === 'valid' || state === 'inter'
+  }
+
+  // Update expression state whenever input changes
+  useEffect(() => {
+    const state = evaluateExpressionState(currentInput)
+    setExpressionState(state)
+  }, [currentInput, elements])
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -55,31 +143,104 @@ export default function EquationCanvas() {
     const trimmed = input.trim()
     if (!trimmed) return
 
-    // alphanumeric/alphanumeric
-    const m = trimmed.match(/^([a-zA-Z0-9]+)\/([a-zA-Z0-9]+)$/)
-
-    if (m) {
-      const newFraction: FractionElement = {
-        type: 'fraction',
-        numerator: m[1],
-        denominator: m[2],
-        id: Date.now().toString()
-      }
-      setElements(prev => [...prev, newFraction])
-    } else {
-      // IMPORTANT: use the parameter, not state
-      const newText: TextElement = {
-        type: 'text',
-        content: trimmed,
-        id: Date.now().toString()
-      }
-      setElements(prev => [...prev, newText])
+    const state = evaluateExpressionState(trimmed)
+    
+    // If state is invalid, don't add to canvas - let user correct the input
+    if (state === 'invalid') {
+      setValidationMessage('Invalid expression: Please correct your input before pressing Enter')
+      setTimeout(() => setValidationMessage(''), 3000)
+      // Don't clear input - let user edit it
+      return
     }
 
-    setCurrentInput('') // clears state + ref via effect
+    // Clear any previous validation message
+    setValidationMessage('')
+
+    // Check for fraction addition pattern: a/b + c/d (only when canvas is empty)
+    const additionMatch = trimmed.match(/^([a-zA-Z0-9]+)\/([a-zA-Z0-9]+)\s*([\+\-\*\/])\s*([a-zA-Z0-9]+)\/([a-zA-Z0-9]+)$/)
+    
+    // Check for operation + fraction pattern: +c/d
+    const operationFractionMatch = trimmed.match(/^([\+\-\*\/])([a-zA-Z0-9]+)\/([a-zA-Z0-9]+)$/)
+    
+    if (additionMatch && elements.length === 0) {
+      const newElements: EquationElement[] = [
+        {
+          type: 'fraction',
+          numerator: additionMatch[1],
+          denominator: additionMatch[2],
+          id: `${Date.now()}-1`
+        },
+        {
+          type: 'text',
+          content: additionMatch[3], // This captures the operation
+          id: `${Date.now()}-2`
+        },
+        {
+          type: 'fraction',
+          numerator: additionMatch[4],
+          denominator: additionMatch[5],
+          id: `${Date.now()}-3`
+        }
+      ]
+      setElements(prev => [...prev, ...newElements])
+    } else if (operationFractionMatch) {
+      // Add operation and fraction separately
+      const newElements: EquationElement[] = [
+        {
+          type: 'text',
+          content: operationFractionMatch[1],
+          id: `${Date.now()}-1`
+        },
+        {
+          type: 'fraction',
+          numerator: operationFractionMatch[2],
+          denominator: operationFractionMatch[3],
+          id: `${Date.now()}-2`
+        }
+      ]
+      setElements(prev => [...prev, ...newElements])
+    } else {
+      // Check for single fraction: alphanumeric/alphanumeric
+      const singleFractionMatch = trimmed.match(/^([a-zA-Z0-9]+)\/([a-zA-Z0-9]+)$/)
+      const operationMatch = trimmed.match(/^[\+\-\*\/]$/)
+      
+      if (singleFractionMatch) {
+        const newFraction: FractionElement = {
+          type: 'fraction',
+          numerator: singleFractionMatch[1],
+          denominator: singleFractionMatch[2],
+          id: Date.now().toString()
+        }
+        setElements(prev => [...prev, newFraction])
+      } else if (operationMatch) {
+        const newOperation: TextElement = {
+          type: 'text',
+          content: trimmed,
+          id: Date.now().toString()
+        }
+        setElements(prev => [...prev, newOperation])
+      } else {
+        // Fallback for other text (shouldn't reach here due to validation)
+        const newText: TextElement = {
+          type: 'text',
+          content: trimmed,
+          id: Date.now().toString()
+        }
+        setElements(prev => [...prev, newText])
+      }
+    }
+
+    setCurrentInput('') // Only clear input when successfully added to canvas
   }
 
   const handleCanvasClick = () => canvasRef.current?.focus()
+
+  const resetEquation = () => {
+    setElements([])
+    setCurrentInput('')
+    setValidationMessage('')
+    setExpressionState('valid')
+  }
 
   return (
     <div className="flex-1 p-6 overflow-hidden">
@@ -91,7 +252,7 @@ export default function EquationCanvas() {
         onClick={handleCanvasClick}
       >
         <div className="text-purple-300 text-sm mb-4">
-          Click here and start typing equations. Use format like "a/b" and press Enter to create fractions.
+          Click here and start typing equations. Enter fractions and operations step by step.
         </div>
 
         {/* Rendered Equations */}
@@ -105,24 +266,82 @@ export default function EquationCanvas() {
                   <div className="text-lg leading-tight">{el.denominator}</div>
                 </div>
               ) : (
-                <span className="text-white text-lg">{el.content}</span>
+                <span className="text-white text-xl font-semibold flex items-center h-full px-2">{el.content}</span>
               )}
             </div>
           ))}
+        </div>
+
+        {/* Reset Button */}
+        {elements.length > 0 && (
+          <div className="mt-4">
+            <button
+              onClick={resetEquation}
+              className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm transition-colors"
+            >
+              Reset Equation
+            </button>
+          </div>
+        )}
+
+        {/* Validation Message */}
+        {validationMessage && (
+          <div className="mt-4 p-3 bg-red-800 border border-red-600 rounded-lg">
+            <p className="text-red-200 text-sm">{validationMessage}</p>
+          </div>
+        )}
+
+        {/* Debug State Display - Temporary for testing */}
+        <div className="mt-4 p-3 bg-blue-800 border border-blue-600 rounded-lg">
+          <div className="text-blue-200 text-xs mb-2">Debug State (for testing):</div>
+          <div className="text-blue-100 text-sm space-y-1">
+            <div>Canvas elements: {elements.length}</div>
+            <div>Last element type: <span className="font-mono bg-blue-700 px-2 py-1 rounded">{getLastElementType()}</span></div>
+            <div>Current input: <span className="font-mono bg-blue-700 px-2 py-1 rounded">"{currentInput}"</span></div>
+            <div>Expression state: <span className={`font-mono px-2 py-1 rounded ${
+              expressionState === 'valid' ? 'bg-green-700 text-green-100' : 
+              expressionState === 'inter' ? 'bg-yellow-700 text-yellow-100' : 
+              'bg-red-700 text-red-100'
+            }`}>
+              {expressionState.toUpperCase()}
+            </span></div>
+            <div>Can enter: <span className={`font-mono px-2 py-1 rounded ${
+              expressionState !== 'invalid' ? 'bg-green-700 text-green-100' : 'bg-red-700 text-red-100'
+            }`}>
+              {expressionState !== 'invalid' ? 'YES' : 'NO'}
+            </span></div>
+          </div>
         </div>
       </div>
 
       {/* Input Display */}
       <div className="mt-4 p-4 bg-gray-700 rounded-lg border border-purple-700/30">
         <div className="text-purple-300 text-sm mb-2">Current input:</div>
-        <div className="bg-gray-800 p-3 rounded border border-gray-600 min-h-[2.5rem] flex items-center">
-          <span className="text-white font-mono text-lg">
+        <div className={`p-3 rounded border min-h-[2.5rem] flex items-center ${
+          expressionState === 'invalid' 
+            ? 'bg-red-900 border-red-600' 
+            : 'bg-gray-800 border-gray-600'
+        }`}>
+          <span className={`font-mono text-lg ${
+            expressionState === 'invalid' ? 'text-red-200' : 'text-white'
+          }`}>
             {currentInput || <span className="text-gray-500">Type here...</span>}
           </span>
-          <span className="text-purple-400 ml-1 animate-pulse">|</span>
+          <span className={`ml-1 animate-pulse ${
+            expressionState === 'invalid' ? 'text-red-400' : 'text-purple-400'
+          }`}>|</span>
         </div>
-        <div className="text-purple-400 text-xs mt-2">
-          Press Enter to convert fractions (e.g., "a/b" becomes a visual fraction)
+        <div className={`text-xs mt-2 ${
+          expressionState === 'invalid' ? 'text-red-400' : 'text-purple-400'
+        }`}>
+          {expressionState === 'invalid' 
+            ? 'Invalid expression - please correct your input before pressing Enter'
+            : elements.length === 0 
+            ? 'Enter a fraction (e.g., "a/b"), operation (e.g., "+"), or complete expression (e.g., "a/b+c/d")'
+            : getLastElementType() === 'fraction'
+            ? 'Enter an operation (+, -, *, /)'
+            : 'Enter a fraction (e.g., "c/d")'
+          }
         </div>
       </div>
     </div>
