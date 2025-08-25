@@ -25,7 +25,13 @@ export default function EquationCanvas() {
   const [elements, setElements] = useState<EquationElement[]>([])
   const [validationMessage, setValidationMessage] = useState<string>('')
   const [expressionState, setExpressionState] = useState<ExpressionState>('valid')
+  const expressionStateRef = useRef<ExpressionState>('valid')
   const canvasRef = useRef<HTMLDivElement>(null)
+
+  // Update the ref whenever expressionState changes
+  useEffect(() => {
+    expressionStateRef.current = expressionState
+  }, [expressionState])
 
   // Function to determine what type the last element on canvas is
   const getLastElementType = (): 'empty' | 'fraction' | 'operation' => {
@@ -41,61 +47,93 @@ export default function EquationCanvas() {
     // Create a hypothetical sequence: canvas elements + potential new input
     const potentialElements = [...elements]
     
+    // Parse the input and add appropriate elements
     if (trimmed) {
-      const isFraction = /^([a-zA-Z0-9]+)\/([a-zA-Z0-9]+)$/.test(trimmed)
-      const isOperation = /^[\+\-\*\/]$/.test(trimmed)
-      const isFullExpression = /^([a-zA-Z0-9]+)\/([a-zA-Z0-9]+)\s*([\+\-\*\/])\s*([a-zA-Z0-9]+)\/([a-zA-Z0-9]+)$/.test(trimmed)
-      const isOperationFraction = /^([\+\-\*\/])([a-zA-Z0-9]+)\/([a-zA-Z0-9]+)$/.test(trimmed)
-      
-      if (isFullExpression) {
-        // Full expression: always results in valid state (fraction + operation + fraction)
-        return 'valid'
-      } else if (isOperationFraction) {
-        // Operation + fraction: add both to potential elements
-        potentialElements.push({ type: 'text', content: '', id: 'temp' })
-        potentialElements.push({ type: 'fraction', numerator: '', denominator: '', id: 'temp' })
-      } else if (isFraction) {
-        potentialElements.push({ type: 'fraction', numerator: '', denominator: '', id: 'temp' })
-      } else if (isOperation) {
-        potentialElements.push({ type: 'text', content: trimmed, id: 'temp' })
+      // Check if input is a complete expression like "a/b + c/d"
+      const fullExpressionMatch = trimmed.match(/^([a-zA-Z0-9]+)\/([a-zA-Z0-9]+)\s*([\+\-\*\/])\s*([a-zA-Z0-9]+)\/([a-zA-Z0-9]+)$/)
+      if (fullExpressionMatch) {
+        // Add all elements from the full expression
+        potentialElements.push(
+          { type: 'fraction', numerator: fullExpressionMatch[1], denominator: fullExpressionMatch[2], id: 'temp-1' },
+          { type: 'text', content: fullExpressionMatch[3], id: 'temp-2' },
+          { type: 'fraction', numerator: fullExpressionMatch[4], denominator: fullExpressionMatch[5], id: 'temp-3' }
+        )
+      } else {
+        // Check for compound patterns like "+a/b" or "+x"
+        const operationFractionMatch = trimmed.match(/^([\+\-\*\/])\s*([a-zA-Z0-9]+)\/([a-zA-Z0-9]+)$/)
+        const operationVariableMatch = trimmed.match(/^([\+\-\*\/])\s*([a-zA-Z0-9])$/)
+        
+        if (operationFractionMatch) {
+          potentialElements.push(
+            { type: 'text', content: operationFractionMatch[1], id: 'temp-op' },
+            { type: 'fraction', numerator: operationFractionMatch[2], denominator: operationFractionMatch[3], id: 'temp-frac' }
+          )
+        } else if (operationVariableMatch) {
+          potentialElements.push(
+            { type: 'text', content: operationVariableMatch[1], id: 'temp-op' },
+            { type: 'text', content: operationVariableMatch[2], id: 'temp-var' }
+          )
+        } else {
+          // Check for single patterns
+          const fractionMatch = trimmed.match(/^([a-zA-Z0-9]+)\/([a-zA-Z0-9]+)$/)
+          const operationMatch = trimmed.match(/^[\+\-\*\/]$/)
+          const variableMatch = trimmed.match(/^[a-zA-Z0-9]$/)
+          
+          if (fractionMatch) {
+            potentialElements.push({ type: 'fraction', numerator: fractionMatch[1], denominator: fractionMatch[2], id: 'temp' })
+          } else if (operationMatch) {
+            potentialElements.push({ type: 'text', content: trimmed, id: 'temp' })
+          } else if (variableMatch) {
+            potentialElements.push({ type: 'text', content: trimmed, id: 'temp' })
+          } else {
+            // Unrecognized pattern
+            return 'invalid'
+          }
+        }
       }
     }
     
-    // Analyze the sequence
+    // Now validate the sequence: element → operation → element → operation → ... → element
     if (potentialElements.length === 0) {
       return 'valid' // Empty is valid
     }
     
-    // Check for invalid patterns
-    for (let i = 0; i < potentialElements.length - 1; i++) {
-      const current = potentialElements[i]
-      const next = potentialElements[i + 1]
+    // Helper function to check if an element is an "element" (fraction or variable)
+    const isElement = (el: EquationElement) => 
+      el.type === 'fraction' || (el.type === 'text' && /^[a-zA-Z0-9]$/.test(el.content))
+    
+    // Helper function to check if an element is an operation
+    const isOperation = (el: EquationElement) => 
+      el.type === 'text' && /^[\+\-\*\/]$/.test(el.content)
+    
+    // Validate the pattern: should alternate element → operation → element...
+    for (let i = 0; i < potentialElements.length; i++) {
+      const el = potentialElements[i]
       
-      // Two fractions in a row = invalid
-      if (current.type === 'fraction' && next.type === 'fraction') {
-        return 'invalid'
-      }
-      
-      // Two operations in a row = invalid
-      if (current.type === 'text' && next.type === 'text') {
-        return 'invalid'
+      if (i % 2 === 0) {
+        // Even indices should be elements (fractions or variables)
+        if (!isElement(el)) {
+          return 'invalid'
+        }
+      } else {
+        // Odd indices should be operations
+        if (!isOperation(el)) {
+          return 'invalid'
+        }
       }
     }
     
-    // Check if expression is complete (valid) or incomplete (inter)
+    // Check completion state
     const lastElement = potentialElements[potentialElements.length - 1]
     
-    if (lastElement.type === 'fraction') {
-      // Ends with fraction
-      if (potentialElements.length === 1) {
-        return 'valid' // Single fraction is valid
-      }
-      // Check if previous element is operation
-      const prevElement = potentialElements[potentialElements.length - 2]
-      return prevElement.type === 'text' ? 'valid' : 'invalid'
-    } else {
-      // Ends with operation - this is intermediate (waiting for fraction)
+    if (isElement(lastElement)) {
+      // Ends with element - this is valid (complete expression)
+      return 'valid'
+    } else if (isOperation(lastElement)) {
+      // Ends with operation - this is intermediate (waiting for next element)
       return 'inter'
+    } else {
+      return 'invalid'
     }
   }
 
@@ -143,10 +181,11 @@ export default function EquationCanvas() {
     const trimmed = input.trim()
     if (!trimmed) return
 
-    const state = evaluateExpressionState(trimmed)
+    console.log("Expression state: ", expressionStateRef.current)
+    console.log("Trimmed input: ", trimmed)
     
-    // If state is invalid, don't add to canvas - let user correct the input
-    if (state === 'invalid') {
+    // Use the ref to get the current expressionState value
+    if (expressionStateRef.current === 'invalid') {
       setValidationMessage('Invalid expression: Please correct your input before pressing Enter')
       setTimeout(() => setValidationMessage(''), 3000)
       // Don't clear input - let user edit it
@@ -156,12 +195,15 @@ export default function EquationCanvas() {
     // Clear any previous validation message
     setValidationMessage('')
 
-    // Check for fraction addition pattern: a/b + c/d (only when canvas is empty)
+    // Check for recognized patterns only - reject unrecognized patterns
     const additionMatch = trimmed.match(/^([a-zA-Z0-9]+)\/([a-zA-Z0-9]+)\s*([\+\-\*\/])\s*([a-zA-Z0-9]+)\/([a-zA-Z0-9]+)$/)
+    const operationFractionMatch = trimmed.match(/^([\+\-\*\/])\s*([a-zA-Z0-9]+)\/([a-zA-Z0-9]+)$/)
+    const operationVariableMatch = trimmed.match(/^([\+\-\*\/])\s*([a-zA-Z0-9])$/)
+    const singleFractionMatch = trimmed.match(/^([a-zA-Z0-9]+)\/([a-zA-Z0-9]+)$/)
+    const operationMatch = trimmed.match(/^[\+\-\*\/]$/)
+    const singleVariableMatch = trimmed.match(/^[a-zA-Z0-9]$/)
     
-    // Check for operation + fraction pattern: +c/d
-    const operationFractionMatch = trimmed.match(/^([\+\-\*\/])([a-zA-Z0-9]+)\/([a-zA-Z0-9]+)$/)
-    
+    // Only process recognized patterns
     if (additionMatch && elements.length === 0) {
       const newElements: EquationElement[] = [
         {
@@ -183,6 +225,7 @@ export default function EquationCanvas() {
         }
       ]
       setElements(prev => [...prev, ...newElements])
+      setCurrentInput('') // Only clear input when successfully added to canvas
     } else if (operationFractionMatch) {
       // Add operation and fraction separately
       const newElements: EquationElement[] = [
@@ -199,38 +242,55 @@ export default function EquationCanvas() {
         }
       ]
       setElements(prev => [...prev, ...newElements])
-    } else {
-      // Check for single fraction: alphanumeric/alphanumeric
-      const singleFractionMatch = trimmed.match(/^([a-zA-Z0-9]+)\/([a-zA-Z0-9]+)$/)
-      const operationMatch = trimmed.match(/^[\+\-\*\/]$/)
-      
-      if (singleFractionMatch) {
-        const newFraction: FractionElement = {
-          type: 'fraction',
-          numerator: singleFractionMatch[1],
-          denominator: singleFractionMatch[2],
-          id: Date.now().toString()
-        }
-        setElements(prev => [...prev, newFraction])
-      } else if (operationMatch) {
-        const newOperation: TextElement = {
+      setCurrentInput('') // Only clear input when successfully added to canvas
+    } else if (operationVariableMatch) {
+      // Add operation and variable separately
+      const newElements: EquationElement[] = [
+        {
           type: 'text',
-          content: trimmed,
-          id: Date.now().toString()
-        }
-        setElements(prev => [...prev, newOperation])
-      } else {
-        // Fallback for other text (shouldn't reach here due to validation)
-        const newText: TextElement = {
+          content: operationVariableMatch[1],
+          id: `${Date.now()}-1`
+        },
+        {
           type: 'text',
-          content: trimmed,
-          id: Date.now().toString()
+          content: operationVariableMatch[2],
+          id: `${Date.now()}-2`
         }
-        setElements(prev => [...prev, newText])
+      ]
+      setElements(prev => [...prev, ...newElements])
+      setCurrentInput('') // Only clear input when successfully added to canvas
+    } else if (singleFractionMatch) {
+      const newFraction: FractionElement = {
+        type: 'fraction',
+        numerator: singleFractionMatch[1],
+        denominator: singleFractionMatch[2],
+        id: Date.now().toString()
       }
+      setElements(prev => [...prev, newFraction])
+      setCurrentInput('') // Only clear input when successfully added to canvas
+    } else if (singleVariableMatch) {
+      const newVariable: TextElement = {
+        type: 'text',
+        content: trimmed,
+        id: Date.now().toString()
+      }
+      setElements(prev => [...prev, newVariable])
+      setCurrentInput('') // Only clear input when successfully added to canvas
+    } else if (operationMatch) {
+      const newOperation: TextElement = {
+        type: 'text',
+        content: trimmed,
+        id: Date.now().toString()
+      }
+      setElements(prev => [...prev, newOperation])
+      setCurrentInput('') // Only clear input when successfully added to canvas
+    } else {
+      // Unrecognized pattern - don't add to canvas
+      setValidationMessage('Invalid pattern: Input not recognized as a valid mathematical expression')
+      setTimeout(() => setValidationMessage(''), 3000)
+      // Don't clear input - let user edit it
+      return
     }
-
-    setCurrentInput('') // Only clear input when successfully added to canvas
   }
 
   const handleCanvasClick = () => canvasRef.current?.focus()
@@ -266,7 +326,13 @@ export default function EquationCanvas() {
                   <div className="text-lg leading-tight">{el.denominator}</div>
                 </div>
               ) : (
-                <span className="text-white text-xl font-semibold flex items-center h-full px-2">{el.content}</span>
+                <span className={`text-white flex items-center h-full px-2 ${
+                  /^[a-zA-Z]$/.test(el.content) 
+                    ? 'text-xl font-normal' // Single variables: normal weight, aligned to center
+                    : 'text-xl font-semibold' // Operations: bold
+                }`}>
+                  {el.content}
+                </span>
               )}
             </div>
           ))}
@@ -337,10 +403,10 @@ export default function EquationCanvas() {
           {expressionState === 'invalid' 
             ? 'Invalid expression - please correct your input before pressing Enter'
             : elements.length === 0 
-            ? 'Enter a fraction (e.g., "a/b"), operation (e.g., "+"), or complete expression (e.g., "a/b+c/d")'
+            ? 'Enter a fraction (e.g., "a/b"), variable (e.g., "x"), operation (e.g., "+"), or complete expression (e.g., "a/b+c/d")'
             : getLastElementType() === 'fraction'
-            ? 'Enter an operation (+, -, *, /)'
-            : 'Enter a fraction (e.g., "c/d")'
+            ? 'Enter an operation (+, -, *, /) or variable (e.g., "x")'
+            : 'Enter a fraction (e.g., "c/d") or variable (e.g., "x")'
           }
         </div>
       </div>
